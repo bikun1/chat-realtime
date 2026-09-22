@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8" />
+<title>Test Chat Realtime</title>
+
+<!--
+  SockJS: thư viện tạo "kết nối kiểu WebSocket" nhưng có fallback nếu trình
+  duyệt/mạng không hỗ trợ WebSocket thuần. Backend của mày dùng .withSockJS()
+  ở WebSocketConfig nên FE bắt buộc phải dùng SockJS chứ không connect
+  WebSocket thẳng bằng `new WebSocket(...)`.
+-->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.6.1/sockjs.min.js"></script>
+
+<!--
+  STOMP.js: thư viện hiểu và tạo ra các frame STOMP (CONNECT, SEND,
+  SUBSCRIBE...) chạy bên trong kết nối SockJS/WebSocket ở trên.
+  Bản @stomp/stompjs mới export biến toàn cục là `StompJs`.
+-->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/7.1.1/stomp.umd.min.js"></script>
+
+<style>
+  body { font-family: sans-serif; max-width: 700px; margin: 30px auto; }
+  fieldset { margin-bottom: 16px; }
+  #messages { border: 1px solid #ccc; height: 300px; overflow-y: auto; padding: 8px; }
+  #messages div { margin-bottom: 6px; }
+  .me { color: #1a73e8; font-weight: bold; }
+  #log { font-size: 12px; color: #666; white-space: pre-wrap; }
+  input, button { padding: 6px; }
+  #status { font-weight: bold; }
+  .ok { color: green; }
+  .bad { color: red; }
+</style>
+</head>
+<body>
+
+<h2>Test Chat Realtime (dùng để debug backend, không phải UI thật)</h2>
+
+<!-- ===================== BƯỚC 1: ĐĂNG KÝ / ĐĂNG NHẬP (REST thuần, chưa liên quan WebSocket) ===================== -->
+<fieldset>
+  <legend>1. Auth (REST) — lấy JWT token trước, vì lúc connect WebSocket cần gửi kèm token</legend>
+
+  <label>Base URL backend: <input id="baseUrl" value="http://localhost:8080" size="30" /></label><br/><br/>
+
+  <input id="regUsername" placeholder="username" />
+  <input id="regEmail" placeholder="email" />
+  <input id="regPassword" placeholder="password" type="password" />
+  <button onclick="register()">Đăng ký</button>
+  <button onclick="login()">Đăng nhập</button>
+
+  <p>Token hiện tại: <code id="tokenDisplay">(chưa có)</code></p>
+</fieldset>
+
+<!-- ===================== BƯỚC 2: CONNECT WEBSOCKET ===================== -->
+<fieldset>
+  <legend>2. Kết nối WebSocket (STOMP over SockJS)</legend>
+  <button onclick="connect()">Connect</button>
+  <button onclick="disconnect()">Disconnect</button>
+  <span id="status" class="bad">Chưa kết nối</span>
+</fieldset>
+
+<!-- ===================== BƯỚC 3: SUBSCRIBE VÀO 1 PHÒNG CHAT ===================== -->
+<fieldset>
+  <legend>3. Subscribe vào 1 conversation để nhận tin nhắn realtime</legend>
+  <input id="conversationId" placeholder="conversationId (vd 1)" />
+  <button onclick="subscribeConversation()">Subscribe</button>
+</fieldset>
+
+<!-- ===================== BƯỚC 4: GỬI TIN NHẮN ===================== -->
+<fieldset>
+  <legend>4. Gửi tin nhắn</legend>
+  <input id="messageContent" placeholder="Nội dung tin nhắn" size="40" />
+  <input id="replyToId" placeholder="replyToId (để trống nếu không reply)" size="20" />
+  <button onclick="sendMessage()">Gửi</button>
+</fieldset>
+
+<h3>Tin nhắn nhận được (từ /topic/conversation.{id}):</h3>
+<div id="messages"></div>
+
+<h3>Log debug:</h3>
+<div id="log"></div>
+
+<script>
+  // ===================================================================
+  // BIẾN TOÀN CỤC
+  // ===================================================================
+  let jwtToken = null;      // token lấy được sau khi login, dùng cho cả REST và WebSocket CONNECT
+  let stompClient = null;   // instance của STOMP client, giữ để subscribe/send/disconnect sau này
+  let currentSub = null;    // subscription hiện tại, để có thể unsubscribe phòng cũ khi đổi phòng
+
+  function log(msg) {
+    document.getElementById('log').textContent += msg + "\n";
+  }
+
+  function baseUrl() {
+    return document.getElementById('baseUrl').value.replace(/\/$/, '');
+  }
+
+  // ===================================================================
+  // BƯỚC 1: REGISTER / LOGIN — đây là REST call bình thường (fetch),
+  // KHÔNG liên quan gì tới WebSocket. Mục đích: lấy JWT token để dùng
+  // ở bước connect WebSocket bên dưới (backend của mày yêu cầu Bearer
+  // token ngay tại lúc STOMP CONNECT, xem WebSocketAuthInterceptor.java).
+  // ===================================================================
+  async function register() {
+    const body = {
+      username: document.getElementById('regUsername').value,
+      email: document.getElementById('regEmail').value,
+      password: document.getElementById('regPassword').value,
+    };
+    const res = await fetch(baseUrl() + '/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      setToken(data.token);
+      log('Đăng ký OK, token đã lưu.');
+    } else {
+      log('Đăng ký lỗi: ' + JSON.stringify(data));
+    }
+  }
+
+  async function login() {
+    const body = {
+      username: document.getElementById('regUsername').value,
+      password: document.getElementById('regPassword').value,
+    };
+    const res = await fetch(baseUrl() + '/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      setToken(data.token);
+      log('Đăng nhập OK, token đã lưu.');
+    } else {
+      log('Đăng nhập lỗi: ' + JSON.stringify(data));
+    }
+  }
+
+  function setToken(token) {
+    jwtToken = token;
+    document.getElementById('tokenDisplay').textContent = token;
+  }
+
+  // ===================================================================
+  // BƯỚC 2: CONNECT WEBSOCKET
+  //
+  // Giải thích luồng:
+  // 1. `new SockJS(baseUrl + '/ws')` mở 1 "kênh vận chuyển" tới đúng
+  //    endpoint mà backend khai báo ở WebSocketConfig: registry.addEndpoint("/ws").
+  //    Lưu ý: KHÔNG cần thêm token vào URL này, vì SockJS chỉ là tầng vận
+  //    chuyển, chưa phải STOMP.
+  // 2. `new StompJs.Client({...})` tạo STOMP client chạy phía trên kênh đó.
+  // 3. `connectHeaders: { Authorization: 'Bearer ' + jwtToken }` — đây là
+  //    chỗ QUAN TRỌNG NHẤT khớp với backend: STOMP client sẽ gửi header này
+  //    kèm frame CONNECT đầu tiên. Bên server, WebSocketAuthInterceptor
+  //    đọc đúng header tên "Authorization" từ frame CONNECT
+  //    (accessor.getFirstNativeHeader("Authorization")) để verify JWT.
+  //    Nếu sai tên header hoặc thiếu "Bearer " thì interceptor sẽ throw
+  //    exception và kết nối bị từ chối ngay.
+  // 4. `onConnect` được gọi khi handshake STOMP thành công (tương đương
+  //    lúc server đã set xong Principal cho session này).
+  // ===================================================================
+  function connect() {
+    if (!jwtToken) {
+      alert('Chưa có token, đăng nhập/đăng ký trước.');
+      return;
+    }
+
+    const socket = new SockJS(baseUrl() + '/ws');
+
+    stompClient = new StompJs.Client({
+      webSocketFactory: () => socket,       // dùng SockJS thay vì WebSocket thuần
+      connectHeaders: {
+        Authorization: 'Bearer ' + jwtToken // header đọc bởi WebSocketAuthInterceptor
+      },
+      debug: (str) => log('[STOMP] ' + str), // in log frame thô, hữu ích để debug
+      reconnectDelay: 0,                     // tắt tự reconnect để dễ debug lỗi auth
+
+      onConnect: () => {
+        setStatus(true);
+        log('Đã connect WebSocket thành công.');
+      },
+
+      // Lỗi ở tầng STOMP (vd token sai -> server đóng kết nối ngay khi CONNECT)
+      onStompError: (frame) => {
+        setStatus(false);
+        log('STOMP error: ' + frame.headers['message']);
+        log('Chi tiết: ' + frame.body);
+      },
+
+      // Lỗi ở tầng WebSocket thô (vd server không chạy, sai URL...)
+      onWebSocketError: (evt) => {
+        setStatus(false);
+        log('WebSocket error (kiểm tra lại baseUrl / server có đang chạy không).');
+      },
+
+      onDisconnect: () => {
+        setStatus(false);
+        log('Đã disconnect.');
+      },
+    });
+
+    stompClient.activate(); // thực sự mở kết nối (mọi thứ ở trên chỉ là cấu hình)
+  }
+
+  function disconnect() {
+    if (stompClient) {
+      stompClient.deactivate();
+    }
+  }
+
+  function setStatus(connected) {
+    const el = document.getElementById('status');
+    el.textContent = connected ? 'Đã kết nối' : 'Chưa kết nối';
+    el.className = connected ? 'ok' : 'bad';
+  }
+
+  // ===================================================================
+  // BƯỚC 3: SUBSCRIBE — đăng ký "lắng nghe" 1 kênh (destination) cụ thể.
+  //
+  // `/topic/conversation.{id}` PHẢI khớp CHÍNH XÁC với destination mà
+  // MessageService.sendMessage() dùng để broadcast:
+  //   messagingTemplate.convertAndSend("/topic/conversation." + conversationId, dto);
+  //
+  // Mỗi lần server nhận tin nhắn mới cho phòng này, callback trong
+  // subscribe() sẽ tự động được gọi — đây chính là "realtime": client
+  // không cần polling/hỏi lại server, server tự đẩy (push) data xuống.
+  //
+  // Lưu ý: subscribe KHÔNG đồng nghĩa là mày được phép gửi tin nhắn vào
+  // phòng đó — quyền gửi được MessageService check riêng (existsByConversationIdAndUserId).
+  // Ở đây để đơn giản test, FE không tự check quyền subscribe, lỗi quyền
+  // (nếu có) sẽ hiện khi mày thử SEND ở bước 4.
+  // ===================================================================
+  function subscribeConversation() {
+    if (!stompClient || !stompClient.connected) {
+      alert('Phải connect WebSocket trước.');
+      return;
+    }
+
+    const convId = document.getElementById('conversationId').value;
+    if (!convId) { alert('Nhập conversationId trước.'); return; }
+
+    // Nếu đang subscribe phòng cũ thì hủy trước, tránh nhận trùng 2 phòng
+    if (currentSub) currentSub.unsubscribe();
+
+    currentSub = stompClient.subscribe('/topic/conversation.' + convId, (frame) => {
+      // frame.body là JSON string của MessageDto server gửi xuống -> parse lại
+      const dto = JSON.parse(frame.body);
+      renderMessage(dto);
+    });
+
+    log('Đã subscribe /topic/conversation.' + convId);
+
+    // Đồng thời subscribe kênh lỗi RIÊNG của user này — khớp với
+    // @SendToUser("/queue/errors") ở ChatController. Prefix "/user" là do
+    // registry.setUserDestinationPrefix("/user") trong WebSocketConfig;
+    // Spring tự route đúng về session của mình, không phải topic chung.
+    stompClient.subscribe('/user/queue/errors', (frame) => {
+      log('[LỖI TỪ SERVER] ' + frame.body);
+      alert('Lỗi từ server: ' + frame.body);
+    });
+  }
+
+  function renderMessage(dto) {
+    const div = document.createElement('div');
+    div.innerHTML = `<span class="me">${dto.senderUsername}</span> (id=${dto.id}` +
+      (dto.replyToId ? `, reply to ${dto.replyToId}` : '') +
+      `): ${dto.content} <small>(${dto.createdAt})</small>`;
+    document.getElementById('messages').appendChild(div);
+    document.getElementById('messages').scrollTop = 1e9;
+  }
+
+  // ===================================================================
+  // BƯỚC 4: SEND — gửi tin nhắn LÊN server.
+  //
+  // Destination "/app/chat.send/{conversationId}" khớp với:
+  //   @MessageMapping("/chat.send/{conversationId}")  (ChatController)
+  // Prefix "/app" là do registry.setApplicationDestinationPrefixes("/app").
+  //
+  // Payload gửi lên phải là JSON khớp cấu trúc MessageDto (record), nhưng
+  // để ý: id, senderId, senderUsername, createdAt server sẽ TỰ set/ghi đè
+  // (xem comment trong MessageDto.java và MessageService.java) — client
+  // gửi giá trị gì cho các field đó cũng bị bỏ qua, nên ở đây gửi null
+  // cho gọn.
+  // ===================================================================
+  function sendMessage() {
+    if (!stompClient || !stompClient.connected) {
+      alert('Phải connect WebSocket trước.');
+      return;
+    }
+    const convId = document.getElementById('conversationId').value;
+    if (!convId) { alert('Nhập conversationId trước.'); return; }
+
+    const content = document.getElementById('messageContent').value;
+    const replyToRaw = document.getElementById('replyToId').value;
+
+    const payload = {
+      id: null,
+      conversationId: Number(convId),
+      senderId: null,          // server tự lấy từ Principal, gửi gì cũng bị bỏ qua
+      senderUsername: null,
+      content: content,
+      replyToId: replyToRaw ? Number(replyToRaw) : null,
+      createdAt: null,
+    };
+
+    stompClient.publish({
+      destination: '/app/chat.send/' + convId,
+      body: JSON.stringify(payload),
+    });
+
+    document.getElementById('messageContent').value = '';
+  }
+</script>
+</body>
+</html>

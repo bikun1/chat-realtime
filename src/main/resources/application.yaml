@@ -2,6 +2,29 @@ spring:
   application:
     name: chat-realtime
 
+  datasource:
+    # createDatabaseIfNotExist=true: MySQL driver tự tạo DB "chat_realtime"
+    # nếu chưa tồn tại, khỏi phải tự CREATE DATABASE bằng tay lúc mới setup.
+    # useSSL=false + allowPublicKeyRetrieval=true: tránh lỗi kết nối SSL/auth
+    # hay gặp khi chạy MySQL local (không cần cho môi trường thật/production).
+    url: jdbc:mysql://localhost:3306/chat_realtime?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    username: root
+    password: root        # đổi thành password MySQL thật của mày
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  jpa:
+    hibernate:
+      # update: Hibernate tự ALTER TABLE theo entity mỗi lần start app —
+      # tiện lúc dev/test vì không cần tự viết migration SQL. TUYỆT ĐỐI
+      # không dùng "update" (hay "create"/"create-drop") ở production thật,
+      # vì Hibernate có thể đoán sai và làm hỏng schema/mất data — production
+      # nên dùng "validate" + công cụ migration riêng như Flyway/Liquibase.
+      ddl-auto: update
+    show-sql: true          # in ra console câu SQL thật Hibernate chạy, hữu ích để debug
+    properties:
+      hibernate:
+        format_sql: true    # in SQL có xuống dòng/thụt đầu dòng cho dễ đọc log
+
 # Secret dùng để ký/verify JWT — PHẢI đủ dài (>= 256 bit cho HS256) và
 # KHÔNG commit thật lên git public, đây là để học nên tạm để ở đây.
 jwt:
