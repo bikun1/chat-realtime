@@ -1,6 +1,8 @@
 package com.example.chat_realtime.config;
 
+import com.example.chat_realtime.security.WebSocketAuthInterceptor;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.messaging.simp.config.ChannelRegistration;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
@@ -10,17 +12,31 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
 @EnableWebSocketMessageBroker
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
+    private final WebSocketAuthInterceptor authInterceptor;
+
+    public WebSocketConfig(WebSocketAuthInterceptor authInterceptor) {
+        this.authInterceptor = authInterceptor;
+    }
+
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
         registry.addEndpoint("/ws")
-                .setAllowedOriginPatterns("*") // siết lại ở production
-                .withSockJS(); // fallback cho trình duyệt không hỗ trợ WS thuần
+                .setAllowedOriginPatterns("*")
+                .withSockJS();
     }
 
     @Override
     public void configureMessageBroker(MessageBrokerRegistry registry) {
-        registry.enableSimpleBroker("/topic", "/queue"); // broker in-memory, đủ để học/demo
-        registry.setApplicationDestinationPrefixes("/app"); // prefix cho tin nhắn client gửi lên
-        registry.setUserDestinationPrefix("/user"); // cho tin nhắn riêng tư 1-1
+        registry.enableSimpleBroker("/topic", "/queue");
+        registry.setApplicationDestinationPrefixes("/app");
+        registry.setUserDestinationPrefix("/user");
+    }
+
+    // Gắn interceptor vào "inbound channel" — tức là channel xử lý MỌI frame
+    // đi TỪ client VÀO server (CONNECT, SEND, SUBSCRIBE...), đúng nơi cần check
+    // JWT.
+    @Override
+    public void configureClientInboundChannel(ChannelRegistration registration) {
+        registration.interceptors(authInterceptor);
     }
 }

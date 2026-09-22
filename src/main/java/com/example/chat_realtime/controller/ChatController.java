@@ -1,13 +1,11 @@
 package com.example.chat_realtime.controller;
 
 import com.example.chat_realtime.dto.MessageDto;
-import com.example.chat_realtime.entity.Message;
 import com.example.chat_realtime.service.MessageService;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
 import org.springframework.messaging.handler.annotation.MessageExceptionHandler;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.Payload;
-import org.springframework.messaging.handler.annotation.SendTo;
 import org.springframework.messaging.simp.annotation.SendToUser;
 import org.springframework.stereotype.Controller;
 
@@ -24,43 +22,50 @@ public class ChatController {
 
     /**
      * Client gửi tin nhắn lên: destination = /app/chat.send/{conversationId}
-     * Server xử lý xong sẽ broadcast tới tất cả client đang subscribe
-     * /topic/conversation.{id}
+     * (client subscribe /topic/conversation.{id} để NHẬN, còn gửi thì publish vào
+     * đây)
      *
-     * Lưu ý: @SendTo ở đây KHÔNG hỗ trợ path variable động kiểu {conversationId}
-     * như REST,
-     * nên mình không dùng @SendTo mà tự inject SimpMessagingTemplate để gửi thủ
-     * công
-     * (xem bên dưới, cách chuẩn hơn cho case có nhiều "phòng" động).
+     * Principal: Spring tự inject dựa trên identity đã xác thực lúc handshake
+     * WebSocket (cấu hình ở phase JWT auth). Nếu chưa làm security, principal sẽ
+     * null → nhớ hoàn thiện security trước khi test thật, method này sẽ NPE ngay
+     * ở dòng lấy senderId.
      */
     @MessageMapping("/chat.send/{conversationId}")
     public void sendMessage(@DestinationVariable Long conversationId,
             @Payload MessageDto incoming,
             Principal principal) {
 
-        // Principal.getName() lấy được nhờ đã cấu hình JWT interceptor ở bước WebSocket
-        // security.
-        // Nếu bạn CHƯA làm phần security, tạm thời sẽ null -> nhớ làm security trước
-        // khi test thật.
         Long senderId = Long.valueOf(principal.getName());
 
-        // Toàn bộ logic nghiệp vụ (check quyền, lưu DB) đẩy xuống service,
-        // controller chỉ đóng vai trò điều phối - không viết logic ở đây.
+        // Toàn bộ logic nghiệp vụ (check quyền, lưu DB, broadcast) nằm ở service,
+        // controller chỉ điều phối — không viết logic xử lý ở đây.
         messageService.sendMessage(conversationId, senderId, incoming.content(), incoming.replyToId());
     }
 
     /**
      * Bắt exception ném ra từ các @MessageMapping trong controller này.
-     * QUAN TRỌNG: khác với REST, nếu không có handler này, exception sẽ chỉ bị log
-     * ở server,
-     * client sẽ KHÔNG nhận được thông báo lỗi gì cả (im lặng treo).
+     * QUAN TRỌNG: khác REST, nếu không có handler này, exception chỉ bị log ở
+     * server — client KHÔNG nhận được thông báo lỗi gì, giao diện sẽ "treo im
+     * lặng" mà không hiểu vì sao.
      *
      * @SendToUser gửi lỗi RIÊNG về đúng người gửi request (qua /user/queue/errors),
      *             không broadcast lỗi cho cả phòng chat.
      */
-    @MessageExceptionHandler
+    @MessageExceptionHandler({ IllegalStateException.class, IllegalArgumentException.class })
     @SendToUser("/queue/errors")
-    public String handleException(Exception ex) {
+    public String handleBusinessException(Exception ex) {
+        // Đây là các lỗi mình TỰ NÉM RA (validate quyền, validate input) nên
+        // message đã được viết sẵn để hiển thị an toàn cho user.
         return ex.getMessage();
+    }
+
+    // Bắt tất cả các exception còn lại (lỗi hệ thống không lường trước) —
+    // KHÔNG trả message gốc ra ngoài để tránh lộ chi tiết nội bộ (stack trace,
+    // tên bảng DB...). Message gốc vẫn nên được log lại ở đây (log.error(...))
+    // để dev debug, chỉ là không gửi cho client.
+    @MessageExceptionHandler(Exception.class)
+    @SendToUser("/queue/errors")
+    public String handleUnexpectedException(Exception ex) {
+        return "Đã có lỗi xảy ra, vui lòng thử lại sau";
     }
 }
