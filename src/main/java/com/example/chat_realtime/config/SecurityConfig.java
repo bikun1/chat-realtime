@@ -15,6 +15,11 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+
+import java.util.List;
 
 @Configuration
 @EnableWebSecurity
@@ -29,15 +34,11 @@ public class SecurityConfig {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
     }
 
-    // Dùng để hash password lúc register, và so sánh lúc login.
-    // KHÔNG BAO GIỜ lưu password dạng plain text vào DB.
     @Bean
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
     }
 
-    // Nối UserDetailsService (tự lấy user từ DB) với PasswordEncoder
-    // để Spring Security biết cách xác thực username/password lúc login.
     @Bean
     public AuthenticationProvider authenticationProvider() {
         DaoAuthenticationProvider provider = new DaoAuthenticationProvider(userDetailsService);
@@ -45,35 +46,55 @@ public class SecurityConfig {
         return provider;
     }
 
-    // Bean này cần thiết để AuthController có thể tự gọi .authenticate(...)
-    // lúc xử lý login (xem AuthController bên dưới).
     @Bean
     public AuthenticationManager authenticationManager(AuthenticationConfiguration config) throws Exception {
         return config.getAuthenticationManager();
     }
 
+    // ---- MỚI THÊM: khai báo rule CORS ----
+    // Đây là bean riêng để Spring Security biết origin/method/header nào
+    // được phép gọi cross-origin vào backend này.
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration config = new CorsConfiguration();
+
+        // Origin của FE test. Nếu mày mở chat-test-client.html trực tiếp
+        // bằng double-click (file://...) thì KHÔNG dùng được setAllowedOrigins
+        // cho "*" kèm credentials — nên tốt nhất mở file này qua 1 local server
+        // (vd VSCode Live Server -> http://127.0.0.1:5500) rồi khai đúng origin đó.
+        config.setAllowedOrigins(List.of(
+                "http://127.0.0.1:5500",
+                "http://localhost:5500"));
+
+        // Cho phép đủ method REST thường dùng
+        config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+
+        // Cho phép mọi header (vì FE có gửi "Authorization: Bearer ...",
+        // "Content-Type: application/json"...)
+        config.setAllowedHeaders(List.of("*"));
+
+        // Áp dụng rule này cho MỌI path trong app
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", config);
+        return source;
+    }
+
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
-                // Tắt CSRF vì đây là stateless API (JWT), không dùng cookie/session
-                // nên không có rủi ro CSRF kiểu form truyền thống.
                 .csrf(csrf -> csrf.disable())
 
-                // KHÔNG tạo session ở server — mỗi request phải tự mang token,
-                // server không "nhớ" ai đã login trước đó (đúng bản chất JWT).
+                // ---- MỚI THÊM: bật CORS, dùng đúng bean vừa khai ở trên ----
+                // Không có dòng này thì Spring Security sẽ CHẶN request trước cả
+                // khi tới được @RestController, dù mày đã cấu hình CorsConfigurationSource.
+                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
 
                 .authorizeHttpRequests(auth -> auth
-                        // Cho phép tự do gọi register/login (chưa có token thì sao gọi
-                        // được các API khác), và endpoint handshake WebSocket "/ws/**"
-                        // (auth thật cho WebSocket xử lý riêng ở interceptor STOMP, không
-                        // qua filter chain HTTP này).
                         .requestMatchers("/auth/**", "/ws/**").permitAll()
-                        // Mọi request khác bắt buộc phải có JWT hợp lệ.
                         .anyRequest().authenticated())
 
-                // Gắn filter tự viết (đọc + verify JWT) vào TRƯỚC filter login mặc định
-                // của Spring Security, để nó chạy đầu tiên trên mỗi request.
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();

@@ -7,9 +7,9 @@ spring:
     # nếu chưa tồn tại, khỏi phải tự CREATE DATABASE bằng tay lúc mới setup.
     # useSSL=false + allowPublicKeyRetrieval=true: tránh lỗi kết nối SSL/auth
     # hay gặp khi chạy MySQL local (không cần cho môi trường thật/production).
-    url: jdbc:mysql://localhost:3306/chat_realtime?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
-    username: root
-    password: root        # đổi thành password MySQL thật của mày
+    url: jdbc:mysql://localhost:3306/demo_auth?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    username: user_self
+    password: 123456        # đổi thành password MySQL thật của mày
     driver-class-name: com.mysql.cj.jdbc.Driver
 
   jpa:
@@ -28,5 +28,5 @@ spring:
 # Secret dùng để ký/verify JWT — PHẢI đủ dài (>= 256 bit cho HS256) và
 # KHÔNG commit thật lên git public, đây là để học nên tạm để ở đây.
 jwt:
-  secret: chat-realtime-super-secret-key-minimum-32-characters-long-1234
+  secret: t0mfr93xOIYDoeMBV/hP4ESxsKLdXsdWJfdsVpQAyC0=
   expiration-ms: 86400000   # 1 ngày

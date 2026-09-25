@@ -27,7 +27,7 @@ public class WebSocketAuthInterceptor implements ChannelInterceptor {
     }
 
     @Override
-    public Message<?> preSend(@NonNull Message<?> message, @NonNull MessageChannel channel) {
+    public Message<?> preSend(Message<?> message, MessageChannel channel) {
         // StompHeaderAccessor giúp đọc/ghi header + command (CONNECT, SEND...)
         // của frame STOMP đang xử lý.
         StompHeaderAccessor accessor = StompHeaderAccessor.wrap(message);
